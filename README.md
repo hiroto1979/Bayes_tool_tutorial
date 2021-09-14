@@ -37,3 +37,11 @@
   [https://www.amazon.co.jp/dp/4320112423/](https://www.amazon.co.jp/dp/4320112423/)
 - RとStanではじめる ベイズ統計モデリングによるデータ分析入門  
   [https://www.amazon.co.jp/dp/4065165369/](https://www.amazon.co.jp/dp/4065165369/)
+
+## 一応実行環境
+
+- R : version 3.6.3 (2020-02-29)
+- RStudio Server : Version 1.3.1093
+- JAGS : 4.3.0
+- rstan : Version 2.21.2, GitRev: 2e1f913d3ca3
+- bayesplot : version 1.7.2
