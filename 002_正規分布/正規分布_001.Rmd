@@ -1,0 +1,229 @@
+---
+title: "正規分布の平均と標準偏差の推定"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# clears workspace:  
+rm(list=ls()) 
+```
+
+
+## 採用するモデルとモデルの記述
+
+事前分布は以下の通り。
+$$
+  \mu \sim N(0, 0.001) \\
+  \sigma \sim Uni(0, 10)
+$$
+
+確率モデル(尤度関数)は以下の通り。
+$$
+  x_i \sim N(\mu, 1/\sigma^2)
+$$
+
+
+### Jagsのモデル記述
+
+モデルをJags用に記述する。
+
+```{r}
+# Inferring a Rate
+tmpJagsModel <- "
+# Inferring the Mean and Standard Deviation of a Gaussian
+model{
+  # Data Come From A Gaussian
+  for (i in 1:n){
+    x[i] ~ dnorm(mu,lambda)
+  }
+  # Priors
+  mu ~ dnorm(0,.001)
+  sigma ~ dunif(0,10)
+  lambda <- 1/pow(sigma,2)
+}
+"
+writeLines(tmpJagsModel, con="Rate_1.jags")  # モデルを一時ファイルに書き込む
+```
+
+
+### Stanのモデル記述
+
+モデルをStan用に記述する。
+
+```{r}
+tmpStanModel <- "
+// Inferring the Mean and Standard Deviation of a Gaussian
+data { 
+  int<lower=1> n;
+  vector<lower=0>[n] x;
+}
+parameters {
+  real mu;
+  real<lower=0,upper=10> sigma; 
+} 
+model {
+  // Priors
+  mu ~ normal(0, sqrt(1000));
+
+  // Data Come From A Gaussian
+  x ~ normal(mu, sigma);
+}
+"
+writeLines(tmpStanModel, con="Rate_1.stan")  # モデルを一時ファイルに書き込む
+```
+
+
+## サンプリング前準備
+
+### 観測変数の設定
+
+```{r}
+x <- c(1.1, 1.9, 2.3, 1.8)
+n <- length(x)
+
+data <- list("x"=x, "n"=n)
+```
+
+### モニターするパラメータの設定
+
+```{r}
+# parameters to be monitored:	
+parameters <- c("mu", "sigma")
+```
+
+### thetaの初期値の設定
+
+```{r}
+myinits <- list(
+  list(mu = 0, sigma = 1)
+)
+```
+
+## サンプル生成
+
+### 共通変数
+
+```{r}
+chains <- 1
+thin <- 1
+iter <- 10000
+warmup <- 1000
+```
+
+### rjags
+
+
+```{r}
+library(rjags)
+
+m <- jags.model(
+  "Rate_1.jags",
+  data     = data,
+  inits    = myinits,
+  n.chains = chains,
+  n.adapt  = 0 )
+
+update(m, warmup) # burn-in
+
+samplesJags <- coda.samples(
+  model          = m,
+  variable.names = parameters,
+  n.iter         = iter - warmup,
+  thin           = thin)
+```
+
+### Stan
+
+```{r}
+library(rstan)
+
+# The following command calls Stan with specific options.
+# For a detailed description type "?rstan".
+samplesStan <- stan(
+  file="Rate_1.stan",   
+  data=data, 
+  init=myinits,  # If not specified, gives random inits
+  pars=parameters,
+  iter=iter, 
+  chains=chains, 
+  thin=thin,
+  warmup = warmup,  # Stands for burn-in; Default = iter/2
+  # seed = 123  # Setting seed; Default is random seed
+)
+# Now the values for the monitored parameters are in the "samples" object, 
+# ready for inspection.
+```
+
+
+
+## bayesplotによる可視化
+
+```{r}
+library(bayesplot)
+```
+
+### ヒストグラム
+
+```{r}
+# Jags
+mcmc_hist(samplesJags, par=c("mu"))
+# Stan
+mcmc_hist(samplesStan, par=c("mu"))
+```
+
+```{r}
+# Jags
+mcmc_hist(samplesJags, par=c("sigma"))
+# Stan
+mcmc_hist(samplesStan, par=c("sigma"))
+```
+
+### 密度分布
+
+```{r}
+# Jags
+mcmc_dens(samplesJags, par=c("mu"))
+# Stan
+mcmc_dens(samplesStan, par=c("mu"))
+```
+
+```{r}
+# Jags
+mcmc_dens(samplesJags, par=c("sigma"))
+# Stan
+mcmc_dens(samplesStan, par=c("sigma"))
+```
+
+### トレースプロット
+
+```{r}
+# Jags
+mcmc_trace(samplesJags, par=c("mu"))
+# Stan
+mcmc_trace(samplesStan, par=c("mu"))
+```
+
+```{r}
+# Jags
+mcmc_trace(samplesJags, par=c("sigma"))
+# Stan
+mcmc_trace(samplesStan, par=c("sigma"))
+```
+
+### コレログラム
+
+```{r}
+# Jags
+mcmc_acf_bar(samplesJags, par=c("mu"))
+# Stan
+mcmc_acf_bar(samplesStan, par=c("mu"))
+```
+
+```{r}
+# Jags
+mcmc_acf_bar(samplesJags, par=c("sigma"))
+# Stan
+mcmc_acf_bar(samplesStan, par=c("sigma"))
+```
