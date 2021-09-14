@@ -1,0 +1,283 @@
+---
+title: "同時分布"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# clears workspace:  
+rm(list=ls()) 
+```
+
+
+## 採用するモデルとモデルの記述
+
+$n$回コイントスをして、$k$回表が出た。
+コインの表が出る割合$\theta$を求める。
+
+すなわち、$\theta$の事後分布を求める。
+
+事前分布は以下の通り。
+$$
+  \theta \sim Beta(1, 1)　\\
+  n \sim Cat(\frac{1}{n_{max}}, \cdots, \frac{1}{n_{max}})
+$$
+
+確率モデル(尤度関数)は以下の通り。
+$$
+  k_i \sim Bin(\theta, n) 
+$$
+
+
+### Jagsのモデル記述
+
+モデルをJags用に記述する。
+
+```{r}
+# Inferring a Rate
+tmpJagsModel <- "
+# Inferring Return Rate and Number of Surveys from Observed Returns
+model{
+  # Observed Returns
+  for (i in 1:m){
+     k[i] ~ dbin(theta,n)
+  }   
+  # Priors on Rate Theta and Number n
+  theta ~ dbeta(1,1)
+  n ~ dcat(p[])
+  for (i in 1:nmax){
+    p[i] <- 1/nmax
+  }
+}
+"
+writeLines(tmpJagsModel, con="Rate_1.jags")  # モデルを一時ファイルに書き込む
+```
+
+
+### Stanのモデル記述
+
+モデルをStan用に記述する。
+
+```{r}
+tmpStanModel <- "
+/* 
+ * Notes to Stan model 
+ * --------------------
+ * This model code is more difficult to understand in Stan implementation since 
+ * Stan is unable to sample discrete parameters. This may change in the future. 
+ * For better understanding read Stan manual chapter 'Mixture Modeling' (p.68 in 
+ * version 2.4.0) first.
+ */
+
+// Inferring Return Rate and Number of Surveys from Observed Returns
+data { 
+  int<lower=0> nmax;
+  int<lower=0> m;
+  int<lower=0,upper=nmax> k[m];
+}
+transformed data {
+  int<lower=0> nmin;  // Minimal possible n
+  
+  nmin <- max(k);
+}
+parameters {
+  real<lower=0,upper=1> theta;
+}
+transformed parameters {
+  vector[nmax] lp_parts;  // Log probability for each n
+
+  // First part of the trick for mixture model
+  for (n in 1:nmax)
+    if (n < nmin)
+      lp_parts[n] <- log(1.0 / nmax) + negative_infinity();  // Zero probability
+    else
+      lp_parts[n] <- log(1.0 / nmax) + binomial_log(k, n, theta); 
+}
+model {
+  // Second part of the trick for mixture model
+  increment_log_prob(log_sum_exp(lp_parts));
+}
+generated quantities {
+  int<lower=1,upper=nmax> n;
+  simplex[nmax] prob_n;
+  
+  // Transforming lp_parts to probabilities of each n
+  prob_n <- softmax(lp_parts);
+  n <- categorical_rng(prob_n);
+}
+"
+writeLines(tmpStanModel, con="Rate_1.stan")  # モデルを一時ファイルに書き込む
+```
+
+
+## サンプリング前準備
+
+### 観測変数の設定
+
+```{r}
+k <- c(16, 18, 22, 25, 27)
+nmax <- 500
+
+m    <- length(k)
+data <- list("nmax"=nmax, "k"=k, "m"=m)
+```
+
+### モニターするパラメータの設定
+
+```{r}
+# parameters to be monitored:	
+parameters <- c("theta", "n")
+```
+
+### thetaの初期値の設定
+
+```{r}
+myinits <- list(
+  list(theta = 0.5, n = nmax/2)
+)
+```
+
+## サンプル生成
+
+### 共通変数
+
+```{r}
+chains <- 1
+thin <- 1
+iter <- 5000
+warmup <- 1000
+```
+
+### rjags
+
+
+```{r}
+library(rjags)
+
+m <- jags.model(
+  "Rate_1.jags",
+  data     = data,
+  inits    = myinits,
+  n.chains = chains,
+  n.adapt  = 0 )
+
+update(m, warmup) # burn-in
+
+samplesJags <- coda.samples(
+  model          = m,
+  variable.names = parameters,
+  n.iter         = iter - warmup,
+  thin           = thin)
+```
+
+### Stan
+
+```{r}
+library(rstan)
+
+# The following command calls Stan with specific options.
+# For a detailed description type "?rstan".
+samplesStan <- stan(
+  file="Rate_1.stan",   
+  data=data, 
+  init=myinits,  # If not specified, gives random inits
+  pars=parameters,
+  iter=iter, 
+  chains=chains, 
+  thin=thin,
+  warmup = warmup,  # Stands for burn-in; Default = iter/2
+  # seed = 123  # Setting seed; Default is random seed
+)
+# Now the values for the monitored parameters are in the "samples" object, 
+# ready for inspection.
+```
+
+
+
+## bayesplotによる可視化
+
+```{r}
+library(bayesplot)
+```
+
+### ヒストグラム
+
+theta
+
+```{r}
+# Jags
+mcmc_hist(samplesJags, par=c("theta"))
+# Stan
+mcmc_hist(samplesStan, par=c("theta"))
+```
+
+n
+
+```{r}
+# Jags
+mcmc_hist(samplesJags, par=c("n"))
+# Stan
+mcmc_hist(samplesStan, par=c("n"))
+```
+
+### 密度分布
+
+theta
+
+```{r}
+# Jags
+mcmc_dens(samplesJags, par=c("theta"))
+# Stan
+mcmc_dens(samplesStan, par=c("theta"))
+```
+
+n
+
+```{r}
+# Jags
+mcmc_dens(samplesJags, par=c("n"))
+# Stan
+mcmc_dens(samplesStan, par=c("n"))
+```
+
+### トレースプロット
+
+theta
+
+```{r}
+# Jags
+mcmc_trace(samplesJags, par=c("theta"))
+# Stan
+mcmc_trace(samplesStan, par=c("theta"))
+```
+
+n
+
+```{r}
+# Jags
+mcmc_trace(samplesJags, par=c("n"))
+# Stan
+mcmc_trace(samplesStan, par=c("n"))
+```
+
+
+### コレログラム
+
+theta
+
+```{r}
+# Jags
+mcmc_acf_bar(samplesJags, par=c("theta"))
+# Stan
+mcmc_acf_bar(samplesStan, par=c("theta"))
+```
+
+n
+
+```{r}
+# Jags
+mcmc_acf_bar(samplesJags, par=c("n"))
+# Stan
+mcmc_acf_bar(samplesStan, par=c("n"))
+```
