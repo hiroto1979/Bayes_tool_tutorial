@@ -1,0 +1,266 @@
+---
+title: "事前と事後の予測"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# clears workspace:  
+rm(list=ls()) 
+```
+
+
+## 採用するモデルとモデルの記述
+
+$n$回コイントスをして、$k$回表が出た。
+コインの表が出る割合$\theta$を求める。
+
+すなわち、$\theta$の事後分布を求める。
+
+事前分布は以下の通り。
+$$
+  \theta \sim Beta(1, 1)
+$$
+
+確率モデル(尤度関数)は以下の通り。
+$$
+  k \sim Bin(\theta, n) 
+$$
+
+
+### Jagsのモデル記述
+
+モデルをJags用に記述する。
+
+```{r}
+# Inferring a Rate
+tmpJagsModel <- "
+# Prior and Posterior Prediction
+model{
+   # 観測データ
+   k ~ dbin(theta,n)
+
+   # 成功率thetaについての事前分布
+   theta ~ dbeta(1,1)
+
+   # 事後予測分布
+   postpredk ~ dbin(theta,n)
+
+   # 事前予測分布
+   thetaprior ~ dbeta(1,1)
+   priorpredk ~ dbin(thetaprior,n)
+}
+"
+writeLines(tmpJagsModel, con="Rate_1.jags")  # モデルを一時ファイルに書き込む
+```
+
+
+### Stanのモデル記述
+
+モデルをStan用に記述する。
+
+```{r}
+tmpStanModel <- "
+// Prior and Posterior Prediction
+data {
+  int<lower=1> n; 
+  int<lower=0> k;
+} 
+parameters {
+  real<lower=0,upper=1> theta;
+  real<lower=0,upper=1> thetaprior;
+}
+model {
+  // 成功率thetaについての事前分布
+  theta ~ beta(1, 1);
+  thetaprior ~ beta(1, 1);
+  // 観測データ
+  k ~ binomial(n, theta);
+}
+generated quantities {
+  int<lower=0> postpredk;
+  int<lower=0> priorpredk;
+    
+  // 事後予測分布
+  postpredk <- binomial_rng(n, theta);
+  // 事前予測分布
+  priorpredk <- binomial_rng(n, thetaprior);
+}
+"
+writeLines(tmpStanModel, con="Rate_1.stan")  # モデルを一時ファイルに書き込む
+```
+
+
+## サンプリング前準備
+
+### 観測変数の設定
+
+```{r}
+k <- 1
+n <- 15
+# Uncomment for Trompetter Data
+# k <- 24
+# n <- 121
+
+data <- list("k"=k, "n"=n) 
+```
+
+### モニターするパラメータの設定
+
+```{r}
+# parameters to be monitored:	
+parameters <- c("theta", "thetaprior", "postpredk", "priorpredk")
+```
+
+### thetaの初期値の設定
+
+```{r}
+myinits <-	list(
+  list(theta = 0.5, thetaprior = 0.5)
+)
+```
+
+## サンプル生成
+
+### 共通変数
+
+```{r}
+chains <- 1
+thin <- 1
+iter <- 20000
+warmup <- 1000
+```
+
+### rjags
+
+
+```{r}
+library(rjags)
+
+m <- jags.model(
+  "Rate_1.jags",
+  data     = data,
+  inits    = myinits,
+  n.chains = chains,
+  n.adapt  = 0 )
+
+update(m, warmup) # burn-in
+
+samplesJags <- coda.samples(
+  model          = m,
+  variable.names = parameters,
+  n.iter         = iter - warmup,
+  thin           = thin)
+```
+
+### Stan
+
+```{r}
+library(rstan)
+
+# The following command calls Stan with specific options.
+# For a detailed description type "?rstan".
+samplesStan <- stan(
+  file="Rate_1.stan",   
+  data=data, 
+  init=myinits,  # If not specified, gives random inits
+  pars=parameters,
+  iter=iter, 
+  chains=chains, 
+  thin=thin,
+  warmup = warmup,  # Stands for burn-in; Default = iter/2
+  # seed = 123  # Setting seed; Default is random seed
+)
+# Now the values for the monitored parameters are in the "samples" object, 
+# ready for inspection.
+```
+
+
+
+## bayesplotによる可視化
+
+```{r}
+library(bayesplot)
+```
+
+### ヒストグラム
+
+事前予測分布
+
+```{r}
+# Jags
+mcmc_hist(samplesJags, par=c("priorpredk"))
+# Stan
+mcmc_hist(samplesStan, par=c("priorpredk"))
+```
+
+事後予測分布
+
+```{r}
+# Jags
+mcmc_hist(samplesJags, par=c("postpredk"))
+# Stan
+mcmc_hist(samplesStan, par=c("postpredk"))
+```
+
+### 密度分布
+
+事前予測分布
+
+```{r}
+# Jags
+mcmc_dens(samplesJags, par=c("priorpredk"))
+# Stan
+mcmc_dens(samplesStan, par=c("priorpredk"))
+```
+
+事後予測分布
+
+```{r}
+# Jags
+mcmc_dens(samplesJags, par=c("postpredk"))
+# Stan
+mcmc_dens(samplesStan, par=c("postpredk"))
+```
+
+### トレースプロット
+
+事前予測分布
+
+```{r}
+# Jags
+mcmc_trace(samplesJags, par=c("priorpredk"))
+# Stan
+mcmc_trace(samplesStan, par=c("priorpredk"))
+```
+
+事後予測分布
+
+```{r}
+# Jags
+mcmc_trace(samplesJags, par=c("postpredk"))
+# Stan
+mcmc_trace(samplesStan, par=c("postpredk"))
+```
+
+
+### コレログラム
+
+事前予測分布
+
+```{r}
+# Jags
+mcmc_acf_bar(samplesJags, par=c("priorpredk"))
+# Stan
+mcmc_acf_bar(samplesStan, par=c("priorpredk"))
+```
+
+事後予測分布
+
+```{r}
+# Jags
+mcmc_acf_bar(samplesJags, par=c("postpredk"))
+# Stan
+mcmc_acf_bar(samplesStan, par=c("postpredk"))
+```

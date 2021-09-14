@@ -1,0 +1,130 @@
+---
+title: "jags(正規分布モデル)"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+# knitr::opts_chunk$set(echo = TRUE)
+
+# clears workspace:  
+rm(list=ls()) 
+```
+
+# jags(正規分布モデル)
+
+## 検討するモデル
+
+モデルとjagsのコードは [http://www.singularpoint.org/blog/r/mcmc-jags-1/](http://www.singularpoint.org/blog/r/mcmc-jags-1/)から引用
+
+
+$$
+  y_i \sim Normal(\mu_i,\sigma^2) \\
+  \mu_i = \alpha + \beta x_i
+$$
+
+データを以下の通り事前に生成する。
+
+`alpha=2`, `beta=3`としてデータを50個ほど生成。
+
+```{r}
+# determine the number of samples
+N <- 50
+
+# data generation
+x <- rnorm(N) 
+y <- 2 + 3 * x + rnorm(N, 0.1)
+```
+
+### jagsによる事後分布のサンプリング
+
+```{r}
+modelString <- "
+model {
+  for(i in 1:N){
+    mu[i] <- alpha + beta*x[i]
+    y[i] ~ dnorm(mu[i],1/(tau^2))
+  }
+  alpha ~ dnorm(0,0.0001)
+  beta ~ dnorm(0,0.0001)
+  tau ~ dgamma(0.1,0.1)
+}
+"
+writeLines(modelString, con="lm.jags")  # モデルを一時ファイルに書き込む
+```
+
+
+見た感じ、Rのコードにかなり似ているけど、実際には細かい点で異なります。
+
+`dnorm`が正規分布なのは同じだけど、第一引数は存在しないし、JAGSでは分散ではなくて精度(`precision`；分散の逆数)を指定することになっているので注意。
+ちなみに、`for` ブロックの後ろの３行は未知パラメータの事前分布を設定しています。
+
+```{r}
+library(rjags)
+
+# compiling and initializing
+lm.mcmc <- jags.model(
+  "lm.jags",
+  data=list('x'=x, 'y'=y, 'N'=N),
+  n.chains=4,  # the number of parallel chains
+  n.adapt=100
+)
+
+# mcmc sampling
+update(lm.mcmc, 1000) # burn-in
+posterior <- coda.samples(
+  lm.mcmc, c('alpha','beta'),
+  2000
+)
+```
+
+こんな感じで推定出来ました。すこしスクリプトについて書いておくと
+
+- `jags.model` 関数の第一引数では先程のモデルファイルを指定する。
+- 第二引数 `data` では JAGS に渡したいRオブジェクトをリスト形式で与える。クオーテーションする必要があるので注意。
+- `n.chains` で並列パスの数を指定
+- `update` で burn-in している
+- `coda.samples` で指定した数のサンプルを `coda` 形式で取得する。
+
+### plot.codaによる可視化
+
+```{r}
+library(coda)
+
+# plotting the result
+plot(posterior) # plot.coda is called
+```
+
+### bayesplotによる可視化
+
+```{r}
+library(bayesplot)
+```
+
+```{r}
+# ヒストグラム
+mcmc_hist(posterior, par=c("alpha", "beta"))
+```
+
+```{r}
+# 密度分布
+mcmc_dens(posterior, par=c("alpha", "beta"))
+```
+
+
+```{r}
+# トレースプロット
+mcmc_trace(posterior, par=c("alpha", "beta"))
+```
+
+
+```{r}
+# 密度分布とトレースプロットのコンボ
+mcmc_combo(posterior, par=c("alpha", "beta"))
+```
+
+
+```{r}
+# MCMCサンプルのコレログラム
+mcmc_acf_bar(posterior, par=c("alpha", "beta"))
+```
