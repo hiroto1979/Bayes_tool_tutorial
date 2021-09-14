@@ -1,0 +1,216 @@
+---
+title: "bayesplotについて"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# clears workspace:  
+rm(list=ls()) 
+```
+
+## 採用するモデルとモデルの記述
+
+$n$回コイントスをして、$k$回表が出た。
+コインの表が出る割合$\theta$を求める。
+
+すなわち、$\theta$の事後分布を求める。
+
+事前分布は以下の通り。
+$$
+  \theta \sim Beta(1, 1)
+$$
+
+確率モデル(尤度関数)は以下の通り。
+$$
+  k \sim Bin(\theta, n)
+$$
+
+
+### Jagsのモデル記述
+
+モデルをJags用に記述する。
+
+```{r}
+# Inferring a Rate
+tmpJagsModel <- "
+model{
+   # 比率 Theta の事前分布
+   theta ~ dbeta(1, 1)
+   # 観測した回数 (確率モデル)
+   k ~ dbin(theta, n)
+}
+"
+writeLines(tmpJagsModel, con="Rate_1.jags")  # モデルを一時ファイルに書き込む
+```
+
+
+### Stanのモデル記述
+
+モデルをStan用に記述する。
+
+```{r}
+tmpStanModel <- "
+// Inferring a Rate
+data { 
+  int<lower=1> n; 
+  int<lower=0> k;
+} 
+parameters {
+  real<lower=0,upper=1> theta;
+} 
+model {
+  // Prior Distribution for Rate Theta
+  theta ~ beta(1, 1);
+  
+  // Observed Counts
+  k ~ binomial(n, theta);
+}
+"
+writeLines(tmpStanModel, con="Rate_1.stan")  # モデルを一時ファイルに書き込む
+```
+
+
+## サンプリング前準備
+
+### 観測変数の設定
+
+```{r}
+k <- 5
+n <- 10
+
+data <- list("k"=k, "n"=n) 
+```
+
+### モニターするパラメータの設定
+
+```{r}
+# parameters to be monitored:	
+parameters <- c("theta")
+```
+
+### thetaの初期値の設定
+
+```{r}
+myinits <-	list(
+  list(theta = 0.1), #chain 1 starting value
+  list(theta = 0.9)) #chain 2 starting value
+
+```
+
+## サンプル生成
+
+### 共通変数
+
+```{r}
+chains <- 2
+thin <- 2
+iter <- 20000
+warmup <- 1000
+```
+
+### rjags
+
+
+```{r}
+library(rjags)
+
+m <- jags.model(
+  "Rate_1.jags",
+  data     = data,
+  inits    = myinits,
+  n.chains = chains,
+  n.adapt  = 0 )
+
+update(m, warmup) # burn-in
+
+samplesJags <- coda.samples(
+  model          = m,
+  variable.names = parameters,
+  n.iter         = iter - warmup,
+  thin           = thin)
+```
+
+### Stan
+
+```{r}
+library(rstan)
+
+# The following command calls Stan with specific options.
+# For a detailed description type "?rstan".
+samplesStan <- stan(
+  file="Rate_1.stan",   
+  data=data, 
+  init=myinits,  # If not specified, gives random inits
+  pars=parameters,
+  iter=iter, 
+  chains=chains, 
+  thin=thin,
+  warmup = warmup,  # Stands for burn-in; Default = iter/2
+  # seed = 123  # Setting seed; Default is random seed
+)
+# Now the values for the monitored parameters are in the "samples" object, 
+# ready for inspection.
+```
+
+
+## bayesplotによる可視化
+
+bayesplotは、rjagsとStanのデータを統一的に可視化することができる。
+
+可視化する主なグラフは以下の通り。
+
+- ヒストグラム
+- 密度分布
+- トレースプロット
+- コレログラム
+
+主ないろいろありそう。
+以下のサイトが参考になる。
+
+- [https://ill-identified.hatenablog.com/entry/2019/06/13/010510](https://ill-identified.hatenablog.com/entry/2019/06/13/010510)
+
+
+まずはなによりのパッケージのインポートからスタート。
+
+```{r}
+library(bayesplot)
+```
+
+### ヒストグラム
+
+```{r}
+# Jags
+mcmc_hist(samplesJags, par=c("theta"))
+# Stan
+mcmc_hist(samplesStan, par=c("theta"))
+```
+
+### 密度分布
+
+```{r}
+# Jags
+mcmc_dens(samplesJags, par=c("theta"))
+# Stan
+mcmc_dens(samplesStan, par=c("theta"))
+```
+
+### トレースプロット
+
+```{r}
+# Jags
+mcmc_trace(samplesJags, par=c("theta"))
+# Stan
+mcmc_trace(samplesStan, par=c("theta"))
+```
+
+
+### コレログラム
+
+```{r}
+# Jags
+mcmc_acf_bar(samplesJags, par=c("theta"))
+# Stan
+mcmc_acf_bar(samplesStan, par=c("theta"))
+```
