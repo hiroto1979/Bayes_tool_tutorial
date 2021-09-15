@@ -1,0 +1,276 @@
+---
+title: "データサンプリングとサンプリングデータの構造"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# clears workspace:  
+rm(list=ls()) 
+```
+
+
+## 用いるモデルについて
+
+事前分布は以下の通り。
+$$
+  \mu \sim N(0, 0.001) \\
+  \sigma \sim Uni(0, 10)
+$$
+
+確率モデル(尤度関数)は以下の通り。
+$$
+  x_i \sim N(\mu, 1/\sigma^2)
+$$
+
+## サンプリングの手順
+
+### モデルファイルの作成
+
+#### Jagsのモデルファイルの作成
+
+Jags用のモデルを記述し、ファイルに書き出す。
+
+```{r}
+jags.tmp.model <- "
+# Inferring the Mean and Standard Deviation of a Gaussian
+model{
+  # Data Come From A Gaussian
+  for (i in 1:n){
+    x[i] ~ dnorm(mu,lambda)
+  }
+  # Priors
+  mu ~ dnorm(0,.001)
+  sigma ~ dunif(0,10)
+  lambda <- 1/pow(sigma,2)
+}
+"
+writeLines(jags.tmp.model, con="modelFile.jags")  # jags.tmp.model の記述内容を modelFile.jags というファイル名で出力する
+```
+
+
+#### Stanのモデルファイルの作成
+
+Stan用のモデルを記述し、ファイルに書き出す。
+
+```{r}
+stan.tmp.model <- "
+// Inferring the Mean and Standard Deviation of a Gaussian
+data { 
+  int<lower=1> n;
+  vector<lower=0>[n] x;
+}
+parameters {
+  real mu;
+  real<lower=0,upper=10> sigma; 
+} 
+model {
+  // Priors
+  mu ~ normal(0, sqrt(1000));
+
+  // Data Come From A Gaussian
+  x ~ normal(mu, sigma);
+}
+"
+writeLines(stan.tmp.model, con="modelFile.stan")  # stan.tmp.model の記述内容を modelFile.stan というファイル名で出力する
+```
+
+
+### サンプリング値(実現値)の入力
+
+```{r}
+x <- c(1.1, 1.9, 2.3, 1.8)
+n <- length(x)
+
+data <- list("x"=x, "n"=n)
+```
+
+
+### 観測するパラメータとその初期値の設定
+
+```{r}
+parameters <- c("mu", "sigma")
+
+parameters_initial <- list(
+  list(mu = 0, sigma = 1),
+  list(mu = 0, sigma = 1),
+  list(mu = 0, sigma = 1),
+  list(mu = 0, sigma = 1),
+  list(mu = 0, sigma = 1)
+)
+```
+
+### MCMCに関連するパラメータの入力
+
+```{r}
+chains <- 5
+thin <- 1
+iter <- 15
+warmup <- 5
+```
+
+
+### MCMCサンプリングの実行
+
+#### rjags
+
+```{r}
+library(rjags)
+
+m <- jags.model(
+  "jags.model.dat",
+  data     = data,
+  inits    = parameters_initial,
+  n.chains = chains,
+  n.adapt  = 0 )
+
+update(m, warmup) # burn-in
+
+jags.mcmc_sample <- coda.samples(
+  model          = m,
+  variable.names = parameters,
+  n.iter         = iter - warmup,
+  thin           = thin)
+```
+
+#### Stan
+
+```{r}
+library(rstan)
+
+stan.mcmc_sample <- stan(
+  file="modelFile.stan",   
+  data=data, 
+  init=parameters_initial,  # If not specified, gives random inits
+  pars=parameters,
+  iter=iter, 
+  chains=chains, 
+  thin=thin,
+  warmup = warmup,  # Stands for burn-in; Default = iter/2
+  # seed = 123  # Setting seed; Default is random seed
+)
+```
+
+
+## データ構造
+
+### rjags
+
+#### 基本的なアクセス
+
+```{r}
+niter(jags.mcmc_sample)     # iterで指定した数の出力
+nvar(jags.mcmc_sample)      # 観測したパラメータの数の出力
+varnames(jags.mcmc_sample)  # 観測したパラメータの変数名をベクトル形式で出力
+nchain(jags.mcmc_sample)    # chainで指定した数の出力
+time(jags.mcmc_sample)　　　# timeの情報を出力
+```
+
+
+```{r}
+jags.mcmc_sample[[1]]   # <num>で指定したchainのデータを出力(この例はchain1の出力)
+```
+
+
+```{r}
+jags.mcmc_sample[,1, drop=FALSE]                # 指定した数に対応する変数の全チェイン分のデータを出力
+jags.mcmc_sample[,"mu", drop=FALSE]             # 指定した数に対応する変数の全チェイン分のデータを出力
+```
+
+```{r}
+jags.mcmc_sample[,2, drop=FALSE][[2]]           # 指定した数に対応する変数のchain1のデータのみを出力
+jags.mcmc_sample[,"sigma", drop=FALSE][[2]]     # 指定した数に対応する変数のchain1のデータのみを出力
+```
+
+
+#### arrayへの変換
+
+```{r}
+jags.mcmc_array <- as.array(jags.mcmc_sample)
+dim(jags.mcmc_array)
+```
+
+`dim(jags.mcmc_array)`で見ればわかる通り、以下の通り格納されている。
+
+> iter, parameter, chain
+
+例えば、今回の場合だと、以下の入力は等価となる。
+
+```{r}
+jags.mcmc_array[, 1, 1]
+jags.mcmc_array[, "mu", 1]
+```
+
+#### data.frameへの変換
+
+```{r}
+jags.mcmc_df <- as.data.frame(jags.mcmc_sample[[1]])  # chain1の出力をdata.frame化している
+jags.mcmc_df
+```
+
+
+## tips
+
+### パラメータごとのデータフレームの取得
+
+```{r}
+for( i in 1:nchain(jags.mcmc_sample) ){
+  temp <- as.data.frame(jags.mcmc_sample[[i]])
+  temp$chain <- i
+  temp$iteration <- 1:niter(jags.mcmc_sample)
+  if ( i==1 ) jags.mcmc_df <- temp
+  else jags.mcmc_df <- rbind(jags.mcmc_df, temp)
+}
+```
+
+
+```{r}
+stan.mcmc_array <- rstan::extract(stan.mcmc_sample, permuted=FALSE)
+for( i in 1:dim(stan.mcmc_array)[2] ){
+  temp <- as.data.frame(stan.mcmc_array[,i,])
+  temp$chain <- i
+  temp$iteration <- 1:nrow(temp)
+  if ( i==1 ) stan.mcmc_df <- temp
+  else stan.mcmc_df <- rbind(stan.mcmc_df, temp)
+}
+```
+
+
+## コードリーディング
+
+### rjags
+
+#### coda
+
+`as.array.mcmc.list`の仕様(mcmclis.R)
+
+```
+"as.array.mcmc.list" <- function(x, drop=TRUE, ...)
+{
+  y <- array(dim=c(niter(x), nvar(x), nchain(x)),
+             dimnames = list(iter=time(x), var=varnames(x), chain=chanames(x)))
+  for(i in 1:nchain(x))
+    y[,,i] <- x[[i]]
+  if(drop)
+    return(drop(y))
+  else
+    return(y)
+}
+```
+
+`as.data.frame.mcmc`の実装(batchSE.R)
+
+```
+## Needed for this function, but generally useful anyway.
+as.data.frame.mcmc <- function(x, row.names = NULL, optional=FALSE, ...) {
+    if (is.matrix(x))
+        as.data.frame.matrix(x,row.names,optional, ...)
+    else {
+        if (is.null(row.names))
+            row.names <- time(x)
+        data.frame("var1"=as.numeric(x), row.names=row.names)
+    }
+
+}
+```
