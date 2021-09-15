@@ -1,0 +1,184 @@
+---
+title: "データ構造"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# clears workspace:  
+rm(list=ls()) 
+```
+
+
+## 採用するモデルとモデルの記述
+
+事前分布は以下の通り。
+$$
+  \mu \sim N(0, 0.001) \\
+  \sigma \sim Uni(0, 10)
+$$
+
+確率モデル(尤度関数)は以下の通り。
+$$
+  x_i \sim N(\mu, 1/\sigma^2)
+$$
+### Jagsのモデル記述
+
+モデルをJags用に記述する。
+
+```{r}
+# Inferring a Rate
+tmpJagsModel <- "
+# Inferring the Mean and Standard Deviation of a Gaussian
+model{
+  # Data Come From A Gaussian
+  for (i in 1:n){
+    x[i] ~ dnorm(mu,lambda)
+  }
+  # Priors
+  mu ~ dnorm(0,.001)
+  sigma ~ dunif(0,10)
+  lambda <- 1/pow(sigma,2)
+}
+"
+writeLines(tmpJagsModel, con="Rate_1.jags")  # モデルを一時ファイルに書き込む
+```
+
+
+### Stanのモデル記述
+
+モデルをStan用に記述する。
+
+```{r}
+tmpStanModel <- "
+// Inferring the Mean and Standard Deviation of a Gaussian
+data { 
+  int<lower=1> n;
+  vector<lower=0>[n] x;
+}
+parameters {
+  real mu;
+  real<lower=0,upper=10> sigma; 
+} 
+model {
+  // Priors
+  mu ~ normal(0, sqrt(1000));
+
+  // Data Come From A Gaussian
+  x ~ normal(mu, sigma);
+}
+"
+writeLines(tmpStanModel, con="Rate_1.stan")  # モデルを一時ファイルに書き込む
+```
+
+
+## サンプリング前準備
+
+### 観測変数の設定
+
+```{r}
+x <- c(1.1, 1.9, 2.3, 1.8)
+n <- length(x)
+
+data <- list("x"=x, "n"=n)
+```
+
+### モニターするパラメータの設定
+
+```{r}
+# parameters to be monitored:	
+parameters <- c("mu", "sigma")
+```
+
+### thetaの初期値の設定
+
+```{r}
+myinits <- list(
+  list(mu = 0, sigma = 1),
+  list(mu = 0, sigma = 1),
+  list(mu = 0, sigma = 1),
+  list(mu = 0, sigma = 1),
+  list(mu = 0, sigma = 1)
+)
+```
+
+## サンプル生成
+
+### 共通変数
+
+```{r}
+chains <- 5
+thin <- 1
+iter <- 1000
+warmup <- 100
+```
+
+### rjags
+
+
+```{r}
+library(rjags)
+
+m <- jags.model(
+  "Rate_1.jags",
+  data     = data,
+  inits    = myinits,
+  n.chains = chains,
+  n.adapt  = 0 )
+
+update(m, warmup) # burn-in
+
+jags.sample <- coda.samples(
+  model          = m,
+  variable.names = parameters,
+  n.iter         = iter - warmup,
+  thin           = thin)
+```
+
+### Stan
+
+```{r}
+library(rstan)
+
+# The following command calls Stan with specific options.
+# For a detailed description type "?rstan".
+stan.sample <- stan(
+  file="Rate_1.stan",   
+  data=data, 
+  init=myinits,  # If not specified, gives random inits
+  pars=parameters,
+  iter=iter, 
+  chains=chains, 
+  thin=thin,
+  warmup = warmup,  # Stands for burn-in; Default = iter/2
+  # seed = 123  # Setting seed; Default is random seed
+)
+# Now the values for the monitored parameters are in the "samples" object, 
+# ready for inspection.
+```
+
+```{r}
+array.jags <- as.array(jags.sample)
+for( i in 1:length(array.jags[1,1,]) ){
+  temp <- as.data.frame(array.jags[,,i])
+  temp$chain <- i
+  temp$iteration <- 1:nrow(temp)
+  if ( i==1 ) df.jags <- temp
+  else df.jags <- rbind(df.jags, temp)
+}
+rm(i, temp)
+```
+
+
+```{r}
+array.stan <- as.array(stan.sample)
+for( i in 1:ncol(stan.sample) ){
+  temp <- as.data.frame(array.stan[,i,])
+  temp$chain <- i
+  temp$iteration <- 1:nrow(temp)
+  if ( i==1 ) df.stan <- temp
+  else df.stan <- rbind(df.stan, temp)
+}
+rm(i, temp)
+```
